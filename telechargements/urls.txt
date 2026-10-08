@@ -1,0 +1,4 @@
+http://127.0.0.1:8000/film.mp4
+http://127.0.0.1:8000/cours.pdf
+http://127.0.0.1:8000/test.bin
+http://127.0.0.1:8000/test2.bin
