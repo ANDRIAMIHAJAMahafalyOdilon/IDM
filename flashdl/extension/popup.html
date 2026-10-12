@@ -1,85 +1,168 @@
 <!DOCTYPE html>
 <html>
-
 <head>
-    <meta charset="utf-8">
+    <meta charset="UTF-8">
     <style>
         body {
-            font-family: Segoe UI, sans-serif;
-            width: 380px;
+            width: 400px;
+            min-height: 200px;
             margin: 0;
+            padding: 10px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             font-size: 13px;
         }
-
-        header {
-            background: #1e6fd9;
-            color: #fff;
-            padding: 10px 12px;
-            font-weight: 600;
-        }
-
-        #status {
-            font-weight: 400;
-            font-size: 11px;
-            display: block;
-        }
-
-        #list {
-            max-height: 320px;
-            overflow-y: auto;
-        }
-
-        .row {
+        .header {
             display: flex;
+            justify-content: space-between;
             align-items: center;
-            gap: 8px;
-            padding: 8px 12px;
+            margin-bottom: 10px;
+            padding-bottom: 10px;
             border-bottom: 1px solid #ddd;
         }
-
-        .info {
-            flex: 1;
-            min-width: 0;
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 5px;
         }
-
-        .name {
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ccc;
+        }
+        .status-dot.online {
+            background: #4CAF50;
+        }
+        .status-dot.offline {
+            background: #f44336;
+        }
+        h3 {
+            margin: 0;
+            font-size: 14px;
+        }
+        .media-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .media-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px;
+            margin: 5px 0;
+            background: #f5f5f5;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .media-item:hover {
+            background: #e0e0e0;
+        }
+        .media-info {
+            flex: 1;
+            overflow: hidden;
+        }
+        .media-name {
+            font-weight: 500;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
-
-        .meta {
+        .media-meta {
+            font-size: 11px;
             color: #666;
+        }
+        .variant-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            margin-top: 7px;
+        }
+        .variant-select {
+            width: 100%;
+            padding: 5px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background: white;
+        }
+        .variant-size {
+            color: #555;
             font-size: 11px;
         }
-
+        .download-variant {
+            padding: 6px;
+            background: #1976d2;
+            color: white;
+        }
+        .media-type {
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            text-transform: uppercase;
+            margin-left: 5px;
+        }
+        .type-video { background: #e3f2fd; color: #1976d2; }
+        .type-hls { background: #fff3e0; color: #f57c00; }
+        .type-dash { background: #f3e5f5; color: #7b1fa2; }
+        .type-audio { background: #e8f5e9; color: #388e3c; }
+        .type-file { background: #eceff1; color: #546e7a; }
+        
+        .empty {
+            text-align: center;
+            padding: 40px 20px;
+            color: #999;
+        }
+        .actions {
+            display: flex;
+            gap: 5px;
+            margin-top: 10px;
+        }
         button {
-            background: #1e6fd9;
-            color: #fff;
-            border: 0;
+            flex: 1;
+            padding: 8px;
+            border: none;
             border-radius: 4px;
-            padding: 6px 10px;
             cursor: pointer;
+            font-size: 12px;
         }
-
-        button:disabled {
-            background: #999;
+        .btn-primary {
+            background: #1976d2;
+            color: white;
         }
-
-        #empty {
-            padding: 16px 12px;
-            color: #666;
+        .btn-primary:hover {
+            background: #1565c0;
+        }
+        .btn-secondary {
+            background: #e0e0e0;
+            color: #333;
+        }
+        .btn-secondary:hover {
+            background: #d0d0d0;
+        }
+        .btn-danger {
+            background: #f44336;
+            color: white;
         }
     </style>
 </head>
-
 <body>
-    <header>FlashDL <span id="status"></span></header>
-    <div id="list"></div>
-    <div id="empty" style="display:none">
-        Aucun fichier détecté. Lance la lecture d'une vidéo ou recharge la page.
+    <div class="header">
+        <h3>FlashDL</h3>
+        <div class="status">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">Vérification...</span>
+        </div>
     </div>
+    
+    <div id="content">
+        <div class="empty">Aucun média détecté sur cette page</div>
+    </div>
+    
+    <div class="actions">
+        <button class="btn-secondary" id="refreshBtn">🔄 Actualiser</button>
+        <button class="btn-danger" id="clearBtn">🗑 Tout effacer</button>
+    </div>
+
     <script src="popup.js"></script>
 </body>
-
 </html>

@@ -71,7 +71,18 @@ def run_queue(args, urls, start_at=None):
     qm = QueueManager(db, args.out or "Downloads", args.parallel,
                       args.t or args.threads, limiter=make_limiter(args))
     for u in urls:
-        qm.add(u, start_at)
+        result = qm.add(u, start_at)
+        # Gérer retour tuple (id, info) de add_video
+        if isinstance(result, tuple):
+            item_id, info = result
+            if info and not info.success:
+                print(f"⚠ Extraction échouée pour {u[:70]}")
+                print(f"    Raison : {info.error}")
+            elif info and info.title:
+                print(f"✓ {info.extractor.upper()} : {info.title[:60]}")
+        else:
+            # Ancien retour simple (id)
+            pass
     print(f"{len(urls)} fichier(s) en file, {args.parallel} en parallèle max.")
     if start_at:
         print("Démarrage prévu à "
@@ -154,6 +165,11 @@ def main():
         return run_queue(args, urls, start_at)
     if args.url:
         if start_at:
+            return run_queue(args, [args.url], start_at)
+        # Dispatch auto : s'il s'agit d'une page extractible (YouTube / FS / AS / ...)
+        # on passe par la file avec extraction. Sinon téléchargement direct single.
+        from core.extractors import is_extractable_url
+        if is_extractable_url(args.url):
             return run_queue(args, [args.url], start_at)
         return run_single(args)
 

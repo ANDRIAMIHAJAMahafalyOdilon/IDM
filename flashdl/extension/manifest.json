@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "FlashDL Integration",
-  "version": "1.0",
+  "version": "1.1.0",
   "description": "Envoie les téléchargements du navigateur vers FlashDL.",
-  "permissions": ["downloads", "webRequest", "cookies", "tabs", "storage"],
+  "permissions": ["downloads", "webRequest", "cookies", "tabs", "storage", "contextMenus", "notifications"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js" },
   "action": { "default_popup": "popup.html", "default_title": "FlashDL" }

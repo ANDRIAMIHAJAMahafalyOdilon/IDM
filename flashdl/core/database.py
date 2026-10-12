@@ -6,7 +6,9 @@ from datetime import datetime
 # La base est stockée dans le profil de l'utilisateur
 # (C:\Users\<nom>\AppData\Roaming\FlashDL), là où Windows autorise l'écriture,
 # même quand le logiciel est installé dans C:\Program Files.
-_APPDATA = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "FlashDL")
+# Variable FLASHDL_DB_DIR : permet de surcharger le dossier de la base (tests/portable).
+_CUSTOM_DIR = os.environ.get("FLASHDL_DB_DIR") or os.environ.get("APPDATA") or os.path.expanduser("~")
+_APPDATA = os.path.join(_CUSTOM_DIR, "FlashDL")
 os.makedirs(_APPDATA, exist_ok=True)
 DB_PATH = os.path.join(_APPDATA, "flashdl.db")
 
@@ -35,9 +37,17 @@ class Database:
                     added_at    TEXT,
                     finished_at TEXT
                 )""")
+            columns = {row[1] for row in self._conn.execute(
+                "PRAGMA table_info(downloads)").fetchall()}
+            if "format_id" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE downloads ADD COLUMN format_id TEXT")
+            if "has_audio" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE downloads ADD COLUMN has_audio INTEGER DEFAULT 1")
             self._conn.commit()
 
-    def add(self, name, url, path, category):
+    def add(self, name, url, path, category, format_id=None, has_audio=True):
         """Ajoute une ligne, ou réutilise celle d'un téléchargement non terminé."""
         with self._lock:
             row = self._conn.execute(
@@ -45,14 +55,14 @@ class Database:
                 "ORDER BY id DESC LIMIT 1", (url, path)).fetchone()
             if row:
                 self._conn.execute(
-                    "UPDATE downloads SET status='queued', error=NULL WHERE id=?",
-                    (row["id"],))
+                    "UPDATE downloads SET status='queued', error=NULL, format_id=?, has_audio=? WHERE id=?",
+                    (format_id, int(bool(has_audio)), row["id"]))
                 self._conn.commit()
                 return row["id"]
             cur = self._conn.execute(
-                "INSERT INTO downloads (name, url, path, category, status, added_at) "
-                "VALUES (?, ?, ?, ?, 'queued', ?)",
-                (name, url, path, category, now()))
+                "INSERT INTO downloads (name, url, path, category, status, added_at, format_id, has_audio) "
+                "VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)",
+                (name, url, path, category, now(), format_id, int(bool(has_audio))))
             self._conn.commit()
             return cur.lastrowid
 

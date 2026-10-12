@@ -5,6 +5,7 @@ from urllib.parse import urlparse, unquote
 
 import requests
 
+from .config import get_headers_for_url
 from .resume import (save_state, load_state, clear_state,
                      part_path, remove_parts)
 
@@ -12,6 +13,12 @@ CHUNK = 64 * 1024
 MIN_SIZE_FOR_SPLIT = 1024 * 1024   # sous 1 Mo : une seule connexion
 MAX_RETRIES = 6
 TIMEOUT = 15
+RETRYABLE_ERRORS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+    requests.exceptions.ContentDecodingError,
+)
 
 
 class DownloadError(Exception):
@@ -66,7 +73,8 @@ def filename_from_url(url):
 class Downloader:
     def __init__(self, url, dest, n_threads=8, expected_sha256=None, limiter=None,
                  headers=None):
-        self.headers = dict(headers or {})
+        # Utiliser les headers appropriés pour l'URL si non fournis
+        self.headers = get_headers_for_url(url, headers)
         self.limiter = limiter
         self.url = url
         self.dest = dest
@@ -195,7 +203,7 @@ class Downloader:
                     return
                 if os.path.getsize(part) <= done:
                     raise OSError("connexion fermée sans données")
-            except (_Retry, OSError) as e:
+            except (_Retry, OSError) + RETRYABLE_ERRORS as e:
                 if not self._ranged:
                     with self._lock:
                         self.downloaded -= got
@@ -279,5 +287,7 @@ class Downloader:
             self.status = "paused"
             return
 
+        if not self._ranged and not self.total:
+            self.total = self.downloaded
         self._merge(segments)
         self.status = "done"

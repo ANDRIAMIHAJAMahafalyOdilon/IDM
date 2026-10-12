@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import math
 
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import (QAction, QApplication, QDoubleSpinBox, QFileDialog,
@@ -10,9 +11,10 @@ from PyQt5.QtWidgets import (QAction, QApplication, QDoubleSpinBox, QFileDialog,
 
 from core.api_server import start_api
 from core.database import Database
+from core.extractors import extract, is_extractable_url
 from core.queue_manager import QueueManager
 from core.rate_limiter import RateLimiter
-from .dialogs import AddDialog
+from .dialogs import AddDialog, VideoFormatDialog
 
 STATES = {"scheduled": "Programmé", "queued": "En attente", "active": "En cours",
           "paused": "En pause", "done": "Terminé", "error": "Erreur"}
@@ -38,7 +40,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("FlashDL")
-        self.resize(980, 540)
+        self.resize(1100, 600)
 
         self.db = Database()
         self.limiter = RateLimiter(0)
@@ -50,6 +52,7 @@ class MainWindow(QMainWindow):
         self._rows = []        # ids dans l'ordre des lignes
         self._bars = {}
         self._prev = {}
+        self._speed = {}
         self._tick = 0
 
         self._build_toolbar()
@@ -70,7 +73,8 @@ class MainWindow(QMainWindow):
         tb.setMovable(False)
         self.addToolBar(tb)
 
-        for text, slot in (("➕ Ajouter", self.on_add), ("⏸ Pause", self.on_pause),
+        for text, slot in (("➕ Ajouter", self.on_add),
+                           ("⏸ Pause", self.on_pause),
                            ("▶ Reprendre", self.on_resume),
                            ("🗑 Supprimer", self.on_remove),
                            ("📁 Dossier", self.on_folder)):
@@ -110,17 +114,18 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["Nom", "Catégorie", "Taille", "Progression", "Vitesse", "État"])
+            ["Nom", "Catégorie", "Taille", "Progression", "Vitesse", "État", "Info"])
         self._style_table(self.table, stretch_col=0)
         self.table.setColumnWidth(3, 200)
+        self.table.setColumnWidth(6, 150)
         self.tabs.addTab(self.table, "Téléchargements")
 
-        self.hist = QTableWidget(0, 6)
+        self.hist = QTableWidget(0, 5)
         self.hist.setHorizontalHeaderLabels(
-            ["#", "Nom", "Catégorie", "Taille", "État", "Date"])
-        self._style_table(self.hist, stretch_col=1)
+            ["Nom", "Catégorie", "Taille", "État", "Date"])
+        self._style_table(self.hist, stretch_col=0)
         self.tabs.addTab(self.hist, "Historique")
 
     @staticmethod
@@ -145,7 +150,22 @@ class MainWindow(QMainWindow):
         if dlg.exec_():
             start_at = dlg.start_at()
             for url in dlg.urls():
-                self.qm.add(url, start_at)
+                if not is_extractable_url(url):
+                    self.qm.add(url, start_at)
+                    continue
+
+                info = extract(url)
+                if not info.success:
+                    QMessageBox.warning(
+                        self, "FlashDL",
+                        info.error or "Impossible de trouver les formats vidéo.")
+                    continue
+
+                format_dialog = VideoFormatDialog(info, self)
+                if format_dialog.exec_():
+                    self.qm.add_video(
+                        url, start_at=start_at, video_info=info,
+                        format_index=format_dialog.selected_format_index())
 
     def on_pause(self):
         i = self._selected_id()
@@ -175,7 +195,7 @@ class MainWindow(QMainWindow):
         self._bars = {}
         self.table.setRowCount(len(snap))
         for row, s in enumerate(snap):
-            for col in range(6):
+            for col in range(7):
                 self.table.setItem(row, col, QTableWidgetItem(""))
             self.table.item(row, 0).setText(s["name"])
             self.table.item(row, 1).setText(s["category"])
@@ -192,15 +212,36 @@ class MainWindow(QMainWindow):
         now = time.time()
         total_speed = 0
         for row, s in enumerate(snap):
-            speed = 0
             prev = self._prev.get(s["id"])
-            if prev and s["state"] == "active" and now > prev[0]:
-                speed = max(0, (s["downloaded"] - prev[1]) / (now - prev[0]))
+            instant_speed = 0
+            elapsed = 0
+            if prev and now > prev[0] and s["state"] == "active":
+                elapsed = now - prev[0]
+                delta = s["downloaded"] - prev[1]
+                if delta >= 0:
+                    instant_speed = delta / elapsed
+            old_speed = self._speed.get(s["id"], 0)
+            if s["state"] != "active":
+                speed = 0
+            elif not prev or elapsed <= 0 or s["downloaded"] < prev[1]:
+                speed = instant_speed
+            else:
+                # Lisser les rafales sans masquer une interruption durable.
+                alpha = 1 - math.exp(-elapsed / 1.0)
+                speed = old_speed + alpha * (instant_speed - old_speed)
+            self._speed[s["id"]] = speed
             self._prev[s["id"]] = (now, s["downloaded"])
             total_speed += speed
 
             self.table.item(row, 2).setText(fmt_size(s["total"]))
-            self._bars[s["id"]].setValue(int(s["percent"]))
+
+            bar = self._bars[s["id"]]
+            if s["state"] == "active" and not s["total"]:
+                bar.setRange(0, 0)          # taille inconnue : barre animée
+            else:
+                bar.setRange(0, 100)
+                bar.setValue(int(s["percent"]))
+
             self.table.item(row, 4).setText(fmt_speed(speed))
 
             label = STATES.get(s["state"], s["state"])
@@ -209,6 +250,12 @@ class MainWindow(QMainWindow):
             state_item = self.table.item(row, 5)
             state_item.setText(label)
             state_item.setToolTip(s["error"] or "")
+
+            info = s.get("info", "")
+            src = s.get("source")
+            if src:
+                info = f"{info} ({src[:30]}…)" if len(src) > 30 else f"{info} ({src})"
+            self.table.item(row, 6).setText(info)
 
         self.speed_label.setText(
             f"Vitesse totale : {fmt_speed(total_speed) or '0.00 Mo/s'}")
@@ -221,7 +268,7 @@ class MainWindow(QMainWindow):
         rows = self.db.history(100)
         self.hist.setRowCount(len(rows))
         for r, h in enumerate(rows):
-            values = [h["id"], h["name"], h["category"], fmt_size(h["size"]),
+            values = [h["name"], h["category"], fmt_size(h["size"]),
                       DB_STATES.get(h["status"], h["status"]),
                       h["finished_at"] or h["added_at"]]
             for c, v in enumerate(values):

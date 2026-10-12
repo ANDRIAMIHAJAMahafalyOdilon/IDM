@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Mire de test FlashDL</title></head>
+<body>
+  <h1>Test flux HLS</h1>
+  <video id="v" controls muted width="480"></video>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+  <script>
+    const v = document.getElementById("v");
+    const src = "index.m3u8";   // pour tester les qualités : "master.m3u8"
+    if (window.Hls && Hls.isSupported()) {
+      const h = new Hls(); h.loadSource(src); h.attachMedia(v);
+    } else { v.src = src; }
+  </script>
+</body>
+</html>

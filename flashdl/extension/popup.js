@@ -1,69 +1,310 @@
-function fmt(n) {
-  if (!n) return "taille inconnue";
-  const u = ["o", "Ko", "Mo", "Go"];
-  let i = 0;
-  while (n >= 1024 && i < 3) { n /= 1024; i++; }
-  return n.toFixed(i ? 1 : 0) + " " + u[i];
+const API = "http://127.0.0.1:9614";
+
+let currentTabId = null;
+let currentTabUrl = null;
+
+// Vérifier si FlashDL est en ligne
+async function checkStatus() {
+    try {
+        const r = await fetch(API + "/ping");
+        const online = r.ok;
+        updateStatus(online);
+        return online;
+    } catch (e) {
+        updateStatus(false);
+        return false;
+    }
 }
 
-function clean(s) {
-  return (s || "").replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").replace(/\s+/g, " ")
-    .trim().slice(0, 120);
+function updateStatus(online) {
+    const dot = document.getElementById('statusDot');
+    const text = document.getElementById('statusText');
+    
+    if (online) {
+        dot.className = 'status-dot online';
+        text.textContent = 'Connecté';
+    } else {
+        dot.className = 'status-dot offline';
+        text.textContent = 'Hors ligne';
+    }
 }
 
-// nom final : serveur > titre de la page (vidéo/audio) > nom dans l'adresse
-function finalName(it, tabTitle) {
-  if (it.cdName) return clean(it.cdName);
-  if ((it.kind === "video" || it.kind === "audio") && clean(tabTitle)) {
-    return clean(tabTitle) + "." + it.ext;
-  }
-  return clean(it.urlName) || ("fichier." + it.ext);
+// Formater la taille
+function formatSize(bytes) {
+    if (!bytes) return '?';
+    const units = ['o', 'Ko', 'Mo', 'Go'];
+    let i = 0;
+    while (bytes >= 1024 && i < units.length - 1) {
+        bytes /= 1024;
+        i++;
+    }
+    return `${bytes.toFixed(1)} ${units[i]}`;
 }
 
-const ICON = { video: "🎬", audio: "🎵", image: "🖼", file: "📦" };
-
-(async () => {
-  const status = document.getElementById("status");
-  const list = document.getElementById("list");
-  const empty = document.getElementById("empty");
-
-  const alive = await chrome.runtime.sendMessage({ type: "alive" });
-  status.textContent = alive.ok ? "FlashDL connecté" : "FlashDL fermé : ouvre l'application";
-
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const key = "tab_" + tab.id;
-  const store = await chrome.storage.session.get(key);
-  const items = (store[key] || []).sort((a, b) => b.size - a.size);
-
-  if (!items.length) { empty.style.display = "block"; return; }
-
-  for (const it of items) {
-    const name = finalName(it, tab.title);
-    const row = document.createElement("div");
-    row.className = "row";
-
-    const info = document.createElement("div");
-    info.className = "info";
-    const nameEl = document.createElement("div");
-    nameEl.className = "name";
-    nameEl.textContent = ICON[it.kind] + " " + name;
-    nameEl.title = it.url;
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.textContent = fmt(it.size) + "  •  " + it.type;
-    info.append(nameEl, meta);
-
-    const btn = document.createElement("button");
-    btn.textContent = "Télécharger";
-    btn.disabled = !alive.ok;
-    btn.onclick = async () => {
-      btn.disabled = true;
-      const r = await chrome.runtime.sendMessage({
-        type: "send", url: it.url, filename: name, referer: tab.url });
-      btn.textContent = r.ok ? "Envoyé ✓" : "Échec";
+// Obtenir le label du type
+function getTypeLabel(kind) {
+    const labels = {
+        'video': 'Vidéo',
+        'hls': 'HLS',
+        'dash': 'DASH',
+        'audio': 'Audio',
+        'image': 'Image',
+        'file': 'Fichier'
     };
+    return labels[kind] || kind;
+}
 
-    row.append(info, btn);
-    list.append(row);
-  }
-})();
+// Charger les médias détectés
+async function loadMedia() {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tabs[0]) return;
+    
+    currentTabId = tabs[0].id;
+    currentTabUrl = tabs[0].url;
+
+    let host = "";
+    try { host = new URL(currentTabUrl).hostname.toLowerCase(); } catch (e) {}
+    if (host === "youtu.be" || host.endsWith(".youtube.com") || host === "youtube.com") {
+        displayYoutube(currentTabUrl);
+        return;
+    }
+    
+    chrome.runtime.sendMessage(
+        { type: "getMedia", tabId: currentTabId },
+        (response) => {
+            if (response && response.media) {
+                displayMedia(response.media);
+            }
+        }
+    );
+}
+
+function displayYoutube(url) {
+    const content = document.getElementById('content');
+    content.innerHTML = '<div class="empty">Analyse des formats YouTube…</div>';
+    chrome.runtime.sendMessage({ type: "extractVideo", url, referer: url }, result => {
+        if (!result || !result.ok || !Array.isArray(result.formats) || !result.formats.length) {
+            content.innerHTML = '';
+            const error = document.createElement('div');
+            error.className = 'empty';
+            error.textContent = result?.error || 'Aucun format vidéo disponible. Vérifie que yt-dlp est installé et à jour, puis actualise la page.';
+            content.appendChild(error);
+            return;
+        }
+
+        const item = document.createElement('div');
+        item.className = 'media-item';
+        const info = document.createElement('div');
+        info.className = 'media-info';
+        const name = document.createElement('div');
+        name.className = 'media-name';
+        name.textContent = result.title || 'Vidéo YouTube';
+        const meta = document.createElement('div');
+        meta.className = 'media-meta';
+        meta.textContent = 'Formats vidéo extraits par yt-dlp';
+        const controls = document.createElement('div');
+        controls.className = 'variant-controls';
+        const select = document.createElement('select');
+        select.className = 'variant-select';
+        const details = document.createElement('div');
+        details.className = 'variant-size';
+        const button = document.createElement('button');
+        button.className = 'download-variant';
+        button.textContent = 'Télécharger cette qualité';
+
+        const formats = result.formats;
+        formats.forEach((format, index) => {
+            const sizeText = format.size ? formatSize(format.size) : 'taille inconnue';
+            select.add(new Option(`${format.label} • ${sizeText}`, String(index)));
+        });
+        const updateDetails = () => {
+            const format = formats[Number(select.value)];
+            if (format) details.textContent = `Qualité : ${format.label} • Taille estimée : ${format.size ? formatSize(format.size) : 'indisponible'}`;
+        };
+        select.addEventListener('change', updateDetails);
+        updateDetails();
+        button.addEventListener('click', () => {
+            button.disabled = true;
+            button.textContent = 'Ajout en cours…';
+            chrome.runtime.sendMessage({
+                type: 'sendVideo', url, referer: url,
+                formatIndex: Number(select.value)
+            }, response => {
+                button.disabled = false;
+                button.textContent = 'Télécharger cette qualité';
+                if (response?.ok) alert(`Vidéo ajoutée à FlashDL : ${result.title || 'YouTube'}`);
+                else alert(response?.error || 'Erreur lors de l’ajout à FlashDL.');
+            });
+        });
+
+        controls.append(select, details, button);
+        info.append(name, meta, controls);
+        item.append(info);
+        content.replaceChildren(item);
+    });
+}
+
+function inspectHls(media) {
+    return new Promise(resolve => {
+        chrome.runtime.sendMessage({
+            type: "inspectHls",
+            url: media.url,
+            referer: media.referer || currentTabUrl || ""
+        }, response => resolve(response || { ok: false }));
+    });
+}
+
+// Afficher les médias
+function displayMedia(mediaList) {
+    const content = document.getElementById('content');
+    
+    if (!mediaList || mediaList.length === 0) {
+        content.innerHTML = '<div class="empty">Aucun média détecté sur cette page</div>';
+        return;
+    }
+    
+    const listDiv = document.createElement('div');
+    listDiv.className = 'media-list';
+    
+    mediaList.forEach((media, index) => {
+        const item = document.createElement('div');
+        item.className = 'media-item';
+        
+        const name = media.cdName || (media.kind === 'hls' ? 'Vidéo en streaming' : media.urlName) || `Média ${index + 1}`;
+        const size = formatSize(media.size);
+        const typeClass = `type-${media.kind}`;
+        
+        const info = document.createElement('div');
+        info.className = 'media-info';
+        const nameNode = document.createElement('div');
+        nameNode.className = 'media-name';
+        nameNode.title = name;
+        nameNode.textContent = name;
+        const meta = document.createElement('div');
+        meta.className = 'media-meta';
+        let host = '';
+        try { host = new URL(media.url).hostname; } catch (e) {}
+        meta.textContent = `${size} • ${host}`;
+        info.append(nameNode, meta);
+
+        const type = document.createElement('span');
+        type.className = `media-type ${typeClass}`;
+        type.textContent = getTypeLabel(media.kind);
+        item.append(info, type);
+
+        if (media.kind === 'hls') {
+            const controls = document.createElement('div');
+            controls.className = 'variant-controls';
+            const select = document.createElement('select');
+            select.className = 'variant-select';
+            select.disabled = true;
+            select.add(new Option('Analyse des qualités…', ''));
+            const details = document.createElement('div');
+            details.className = 'variant-size';
+            details.textContent = 'Résolution et taille en cours d’analyse…';
+            const button = document.createElement('button');
+            button.className = 'download-variant';
+            button.textContent = 'Télécharger cette qualité';
+            button.disabled = true;
+            controls.append(select, details, button);
+            info.appendChild(controls);
+
+            let variants = [];
+            const updateDetails = () => {
+                const variant = variants[Number(select.value)];
+                if (!variant) return;
+                const sizeText = variant.size ? formatSize(variant.size) : 'non estimée';
+                details.textContent = `Qualité : ${variant.label} • Taille estimée : ${sizeText}`;
+            };
+            select.addEventListener('change', updateDetails);
+            button.addEventListener('click', () => {
+                const variant = variants[Number(select.value)];
+                if (variant) sendToFlashDL({ ...media, url: variant.url });
+            });
+
+            inspectHls(media).then(result => {
+                if (!result.ok || !Array.isArray(result.formats) || !result.formats.length) {
+                    details.textContent = 'Impossible de lire cette playlist HLS. Vérifiez que FlashDL est démarré.';
+                    return;
+                }
+                variants = result.formats;
+                select.replaceChildren();
+                variants.forEach((variant, variantIndex) => {
+                    const sizeText = variant.size ? formatSize(variant.size) : 'taille inconnue';
+                    select.add(new Option(`${variant.label} • ${sizeText}`, String(variantIndex)));
+                });
+                select.disabled = false;
+                button.disabled = false;
+                updateDetails();
+                if (!result.variants_found && !variants.some(variant => variant.size)) {
+                    details.textContent = 'La playlist ne fournit qu’une qualité et sa taille ne peut pas être estimée.';
+                }
+            });
+        } else {
+            item.addEventListener('click', () => sendToFlashDL(media));
+            if (!media.size && (media.kind === 'video' || media.kind === 'audio')) {
+                inspectHls(media).then(result => {
+                    if (!result.ok || !result.size) return;
+                    media.size = result.size;
+                    meta.textContent = `${formatSize(result.size)} • ${host}`;
+                });
+            }
+        }
+        
+        listDiv.appendChild(item);
+    });
+    
+    content.innerHTML = '';
+    content.appendChild(listDiv);
+}
+
+// Envoyer à FlashDL
+async function sendToFlashDL(media) {
+    const online = await checkStatus();
+    if (!online) {
+        alert("FlashDL n'est pas démarré. Lance l'application d'abord.");
+        return;
+    }
+    
+    const filename = media.cdName || media.urlName || `download.${media.ext}`;
+    const isStream = media.kind === 'hls' || media.kind === 'dash';
+    
+    chrome.runtime.sendMessage({
+        type: "send",
+        url: media.url,
+        filename: filename,
+        referer: media.referer || currentTabUrl || '',
+        stream: isStream,
+        mediaType: media.kind
+    }, (response) => {
+        if (response && response.ok) {
+            // Feedback visuel
+            alert(`Ajouté à FlashDL : ${filename}`);
+        } else {
+            alert("Erreur lors de l'ajout à FlashDL");
+        }
+    });
+}
+
+// Effacer la liste
+function clearMedia() {
+    if (currentTabId) {
+        chrome.runtime.sendMessage(
+            { type: "clearMedia", tabId: currentTabId },
+            () => loadMedia()
+        );
+    }
+}
+
+// Initialisation
+document.addEventListener('DOMContentLoaded', () => {
+    checkStatus();
+    loadMedia();
+    
+    document.getElementById('refreshBtn').addEventListener('click', () => {
+        checkStatus();
+        loadMedia();
+    });
+    
+    document.getElementById('clearBtn').addEventListener('click', clearMedia);
+});
