@@ -1,6 +1,8 @@
 import json
+import hashlib
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -10,7 +12,8 @@ from .config import get_headers_for_url
 from .extractors import (VideoFormat, _expand_hls_master, extract,
                          is_extractable_url)
 
-PORT = 9614
+PORT = 9615
+APP_VERSION = "1.2.0"
 
 
 def _clean_name(name):
@@ -18,8 +21,24 @@ def _clean_name(name):
     return name[:150] or None
 
 
-def start_api(qm, port=PORT):
+def start_api(qm, port=PORT, on_download_request=None):
     """Démarre le serveur local pour l'extension. Renvoie le serveur (ou None)."""
+    extracted_cache = {}
+    extracted_cache_lock = threading.Lock()
+
+    def cache_key(url, headers):
+        material = "\n".join((url, headers.get("Referer", ""),
+                              headers.get("Cookie", ""), headers.get("User-Agent", "")))
+        return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()
+
+    def cached_info(key):
+        now = time.monotonic()
+        with extracted_cache_lock:
+            for old_key, (expires, _) in list(extracted_cache.items()):
+                if expires <= now:
+                    extracted_cache.pop(old_key, None)
+            entry = extracted_cache.get(key)
+            return entry[1] if entry and entry[0] > now else None
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -30,19 +49,23 @@ def start_api(qm, port=PORT):
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
+            origin = self.headers.get("Origin", "")
+            if re.fullmatch(r"chrome-extension://[a-p]{32}", origin):
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
             self.end_headers()
             self.wfile.write(body)
 
         def do_GET(self):
             if self.path == "/ping":
-                self._json(200, {"app": "FlashDL"})
+                self._json(200, {"app": "Roch Xd", "version": APP_VERSION})
             else:
                 self._json(404, {"error": "not found"})
 
         def do_POST(self):
             # seules les extensions de navigateur sont acceptées, pas les sites web
-            if not self.headers.get("Origin", "").startswith("chrome-extension://"):
+            origin = self.headers.get("Origin", "")
+            if not re.fullmatch(r"chrome-extension://[a-p]{32}", origin):
                 self._json(403, {"error": "origine refusée"})
                 return
             if self.path not in ("/add", "/inspect", "/extract"):
@@ -67,9 +90,23 @@ def start_api(qm, port=PORT):
                     headers.pop("Cookie", None)
                 if data.get("userAgent"):
                     headers["User-Agent"] = data.get("userAgent")
+                if self.path == "/add" and on_download_request:
+                    request_data = {**data, "headers": headers}
+                    if data.get("formatIndex") is not None:
+                        request_data["_video_info"] = cached_info(
+                            cache_key(url, headers))
+                    result = on_download_request(request_data)
+                    self._json(200, result)
+                    return
 
                 if self.path == "/extract":
                     info = extract(url, extra_headers=headers)
+                    if info.success and info.formats:
+                        with extracted_cache_lock:
+                            extracted_cache[cache_key(url, headers)] = (
+                                time.monotonic() + 30.0, info)
+                            while len(extracted_cache) > 32:
+                                extracted_cache.pop(next(iter(extracted_cache)))
                     self._json(200, {
                         "ok": info.success,
                         "title": info.title,
@@ -82,6 +119,7 @@ def start_api(qm, port=PORT):
                             "ext": fmt.ext,
                             "size": fmt.size,
                             "hasAudio": fmt.has_audio,
+                            "bitrateKbps": fmt.bitrate_kbps,
                         } for index, fmt in enumerate(info.formats)],
                     })
                     return
@@ -129,6 +167,7 @@ def start_api(qm, port=PORT):
                             "label": fmt.label,
                             "url": fmt.url,
                             "size": fmt.size,
+                            "bitrateKbps": fmt.bitrate_kbps,
                         } for fmt in formats],
                     })
                     return
@@ -153,6 +192,8 @@ def start_api(qm, port=PORT):
     try:
         server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     except OSError:
-        return None     # port déjà pris (FlashDL déjà ouvert ?)
+        return None     # port déjà pris (Roch Xd déjà ouvert ?)
+    server.daemon_threads = True
+    server.block_on_close = False
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server

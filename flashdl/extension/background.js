@@ -1,5 +1,40 @@
-const API = "http://127.0.0.1:9614";
+const API = "http://127.0.0.1:9615";
+const APP_VERSION = "1.2.0";
 const ignore = new Set();
+const extractedInfoCache = new Map();
+const extractionInFlight = new Map();
+
+function extractionKey(url, referer, cookies, userAgent) {
+    return [url, referer || "", cookies || "", userAgent || ""].join("\n");
+}
+
+async function getVideoInfo(url, referer) {
+    let cookies = "";
+    try {
+        cookies = (await chrome.cookies.getAll({ url }))
+            .map(c => c.name + "=" + c.value).join("; ");
+    } catch (_) { return { ok: false, error: "Les cookies de la page sont inaccessibles." }; }
+    const key = extractionKey(url, referer, cookies, navigator.userAgent);
+    for (const [oldKey, entry] of extractedInfoCache) {
+        if (entry.expiresAt <= Date.now()) extractedInfoCache.delete(oldKey);
+    }
+    const cached = extractedInfoCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.info;
+    if (extractionInFlight.has(key)) return extractionInFlight.get(key);
+    const request = youtubeRequest("/extract", url, referer, undefined, {
+        page_url: referer || url
+    }).then(info => {
+        if (info?.ok && Array.isArray(info.formats)) {
+            extractedInfoCache.set(key, { info, expiresAt: Date.now() + 30_000 });
+            while (extractedInfoCache.size > 32)
+                extractedInfoCache.delete(extractedInfoCache.keys().next().value);
+        }
+        return info;
+    }).catch(() => ({ ok: false, error: "L’analyse vidéo a échoué." }))
+        .finally(() => extractionInFlight.delete(key));
+    extractionInFlight.set(key, request);
+    return request;
+}
 
 let queue = Promise.resolve();
 function serialized(fn) {
@@ -76,15 +111,19 @@ function nameFromDisposition(cd) {
 }
 
 async function alive() {
-    try { 
-        return (await fetch(API + "/ping")).ok; 
-    } catch (e) { 
-        return false; 
+    try {
+        const response = await fetch(API + "/ping");
+        if (!response.ok) return false;
+        const app = await response.json();
+        return app?.app === "Roch Xd" && app?.version === APP_VERSION;
+    } catch (e) {
+        return false;
     }
 }
 
-async function sendToFlashDL(url, filename, referer, stream, mediaType = "file") {
+async function sendToFlashDL(url, filename, referer, stream, mediaType = "file", metadata = {}) {
     try {
+        if (!(await alive())) return { ok: false, error: "Redémarre Roch Xd et recharge l’extension Roch Xd 1.2.0." };
         const cookies = (await chrome.cookies.getAll({ url }))
             .map(c => c.name + "=" + c.value).join("; ");
         
@@ -98,10 +137,12 @@ async function sendToFlashDL(url, filename, referer, stream, mediaType = "file")
                 cookies, 
                 stream: !!stream,
                 userAgent: navigator.userAgent,
-                mediaType: mediaType
+                mediaType: mediaType,
+                ...metadata
             })
         });
-        return r.ok;
+        const result = await r.json();
+        return r.ok ? result : { ok: false, unavailable: true };
     } catch (e) { 
         return false; 
     }
@@ -109,6 +150,7 @@ async function sendToFlashDL(url, filename, referer, stream, mediaType = "file")
 
 async function inspectHlsWithFlashDL(url, referer) {
     try {
+        if (!(await alive())) return { ok: false, error: "Roch Xd 1.2.0 doit être redémarré." };
         const cookies = (await chrome.cookies.getAll({ url }))
             .map(c => c.name + "=" + c.value).join("; ");
         const r = await fetch(API + "/inspect", {
@@ -127,8 +169,9 @@ async function inspectHlsWithFlashDL(url, referer) {
     }
 }
 
-async function youtubeRequest(path, url, referer, formatIndex) {
+async function youtubeRequest(path, url, referer, formatIndex, metadata = {}) {
     try {
+        if (!(await alive())) return { ok: false, error: "Redémarre Roch Xd et recharge l’extension Roch Xd 1.2.0." };
         const cookies = (await chrome.cookies.getAll({ url }))
             .map(c => c.name + "=" + c.value).join("; ");
         const r = await fetch(API + path, {
@@ -137,13 +180,14 @@ async function youtubeRequest(path, url, referer, formatIndex) {
             body: JSON.stringify({
                 url, referer: referer || "", cookies,
                 userAgent: navigator.userAgent,
-                ...(formatIndex === undefined ? {} : { formatIndex })
+                ...(formatIndex === undefined ? {} : { formatIndex }),
+                ...metadata
             })
         });
         const body = await r.json();
-        return r.ok ? body : { ok: false, error: body.error || "FlashDL a refusé la requête." };
+        return r.ok ? body : { ok: false, error: body.error || "Roch Xd a refusé la requête." };
     } catch (e) {
-        return { ok: false, error: "FlashDL ne répond pas. Lance l’application puis réessaie." };
+        return { ok: false, error: "Roch Xd ne répond pas. Lance l’application puis réessaie." };
     }
 }
 
@@ -191,6 +235,7 @@ chrome.webRequest.onHeadersReceived.addListener(async (d) => {
         if (list.some(x => x.url === d.url)) return;
         list.push({
             url: d.url, type, kind, size,
+            detectedAt: Date.now(),
             ext: isHls ? "mp4" : (extFromUrl(d.url) || EXT[type] || "bin"),
             cdName: nameFromDisposition(h["content-disposition"]),
             urlName: nameFromUrl(d.url),
@@ -198,6 +243,19 @@ chrome.webRequest.onHeadersReceived.addListener(async (d) => {
         });
         await chrome.storage.session.set({ [key]: list });
         chrome.action.setBadgeText({ tabId: d.tabId, text: String(list.length) });
+        // A player often creates its blob: video element before hls.js requests
+        // the playlist. Wake the content script in that exact frame so its
+        // initially empty resource scan does not leave the panel hidden.
+        if (d.frameId >= 0) {
+            chrome.tabs.get(d.tabId).then(tab => chrome.tabs.sendMessage(d.tabId, {
+                type: "mediaResourceCaptured",
+                resource: list[list.length - 1],
+                frameUrl: d.documentUrl || d.initiator || "",
+                pageUrl: tab.url || "",
+                pageTitle: tab.title || ""
+            }, { frameId: d.frameId }, () => void chrome.runtime.lastError))
+                .catch(() => {});
+        }
     });
     chrome.action.setBadgeBackgroundColor({ tabId: d.tabId, color: "#4CAF50" });
     
@@ -207,16 +265,14 @@ chrome.webRequest.onHeadersReceived.addListener(async (d) => {
 }, ["responseHeaders"]);
 
 // Nettoyage lors du changement de page
-const lastHost = {};
 chrome.tabs.onUpdated.addListener((tabId, info) => {
     if (info.status === "loading" && info.url) {
-        let host = "";
-        try { host = new URL(info.url).host; } catch (e) {}
-        if (lastHost[tabId] === host) return;     // même site : on garde la liste
-        lastHost[tabId] = host;
         serialized(() => chrome.storage.session.remove("tab_" + tabId));
         chrome.action.setBadgeText({ tabId, text: "" });
     }
+});
+chrome.tabs.onRemoved.addListener(tabId => {
+    serialized(() => chrome.storage.session.remove("tab_" + tabId));
 });
 
 // ---------- 2. Interception des téléchargements ----------
@@ -233,9 +289,9 @@ chrome.downloads.onCreated.addListener(async (item) => {
         chrome.downloads.erase({ id: item.id });
     });
     
-    // Envoyer à FlashDL
-    const ok = await sendToFlashDL(url, name, item.referrer || "", false, "file");
-    if (!ok) {
+    // Envoyer à Roch Xd
+    const result = await sendToFlashDL(url, name, item.referrer || "", false, "file");
+    if (!result?.ok && !result?.cancelled) {
         ignore.add(url);
         chrome.downloads.download({ url });
     }
@@ -245,7 +301,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
 chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({
         id: "downloadWithFlashDL",
-        title: "Télécharger avec FlashDL",
+        title: "Télécharger avec Roch Xd",
         contexts: ["link", "video", "audio"]
     });
 });
@@ -255,8 +311,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         chrome.notifications.create({
             type: "basic",
             iconUrl: "icon.png",
-            title: "FlashDL",
-            message: "FlashDL n'est pas démarré. Lance l'application d'abord."
+            title: "Roch Xd",
+            message: "Roch Xd n'est pas démarré. Lance l'application d'abord."
         });
         return;
     }
@@ -270,24 +326,67 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
 // ---------- 4. Communication avec le popup ----------
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+    if (msg.type === "getVideoResources") {
+        const tabId = sender.tab?.id;
+        if (tabId == null) { reply({ resources: [] }); return; }
+        chrome.storage.session.get("tab_" + tabId).then(store => {
+            const cached = store["tab_" + tabId] || [];
+            // Content scripts also run inside cross-origin player iframes.
+            // Their document URL is the relevant context for matching media
+            // requests; sender.tab.url always points at the top-level page.
+            const pageUrl = msg.pageUrl || sender.tab?.url || "";
+            const samePageContext = item => {
+                if (!item.referer) return true;
+                return [pageUrl, sender.tab?.url].filter(Boolean).some(context => {
+                    if (item.referer === context) return true;
+                    try {
+                        // Some requests expose only the initiator origin while
+                        // the content script knows the full iframe URL.
+                        return new URL(item.referer).origin === new URL(context).origin;
+                    } catch (_) { return false; }
+                });
+            };
+            const direct = (msg.sources || []).filter(source =>
+                source && /^https?:/i.test(source.url || "") &&
+                /\.(mp4|webm|mkv|avi|mov|m4v)(?:[?#]|$)/i.test(source.url));
+            let resources = [...cached.filter(item =>
+                ["video", "hls", "dash"].includes(item.kind) &&
+                !/\.(ts|m4s|m4f|cmfv|cmfa)(?:[?#]|$)/i.test(item.url) &&
+                (!item.detectedAt || Date.now() - item.detectedAt < 2 * 60 * 1000) &&
+                samePageContext(item)), ...direct];
+            const seen = new Set();
+            resources = resources.filter(item => {
+                if (!item.url || seen.has(item.url)) return false;
+                seen.add(item.url); return true;
+            });
+
+            // Return captured/direct sources immediately. yt-dlp extraction is
+            // requested separately so it cannot delay already usable media.
+            reply({ resources, pageTitle: sender.tab?.title || "",
+                pageUrl: sender.tab?.url || pageUrl, frameUrl: pageUrl });
+        }).catch(() => reply({ resources: [] }));
+        return true;
+    }
     if (msg.type === "inspectHls") {
         inspectHlsWithFlashDL(msg.url, msg.referer)
             .then(result => reply(result));
         return true;
     }
     if (msg.type === "extractVideo") {
-        youtubeRequest("/extract", msg.url, msg.referer)
+        getVideoInfo(msg.url, msg.referer)
             .then(result => reply(result));
         return true;
     }
     if (msg.type === "sendVideo") {
-        youtubeRequest("/add", msg.url, msg.referer, msg.formatIndex)
+        youtubeRequest("/add", msg.url, msg.referer, msg.formatIndex, msg.metadata || {})
             .then(result => reply(result));
         return true;
     }
     if (msg.type === "send") {
-        sendToFlashDL(msg.url, msg.filename, msg.referer, msg.stream, msg.mediaType || "file")
-            .then(ok => reply({ ok }));
+        sendToFlashDL(msg.url, msg.filename, msg.referer, msg.stream,
+                      msg.mediaType || "file", msg.metadata || {})
+            .then(result => reply(result && typeof result === "object"
+                ? result : { ok: false }));
         return true;
     }
     if (msg.type === "alive") {

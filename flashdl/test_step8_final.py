@@ -107,11 +107,11 @@ try:
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{API_PORT}/ping", timeout=5) as resp:
                 body = json.loads(resp.read().decode())
-                ping_ok = resp.status == 200 and body.get("app") == "FlashDL"
+                ping_ok = resp.status == 200 and body.get("app") == "Roch Xd"
         except Exception as e:
             ping_ok = False
             print(f"   /ping EXC: {e}")
-        _ok("api_ping", ping_ok, "/ping -> 200 {app:'FlashDL'}")
+        _ok("api_ping", ping_ok, "/ping -> 200 {app:'Roch Xd'}")
 
         # /add POST — origine chrome-extension:// (requis)
         try:
@@ -163,7 +163,7 @@ try:
         "spec_hidden":    "HIDDENIMPORTS" in code and "PyQt5.QtWidgets" in code,
         "spec_excludes":  "EXCLUDES"      in code and "tkinter" in code,
         "spec_console_f": "console=False," in code,
-        "spec_exe_name":  "name='FlashDL'" in code,
+        "spec_exe_name":  "name='Roch Xd'" in code,
     }
     for k, v in checks.items():
         _ok(f"spec_{k}", v, f"contenu {k}={v}")
@@ -186,15 +186,15 @@ try:
     with open(mf_path, "r", encoding="utf-8") as f:
         mf = json.load(f)
     iss_ok = all(x in iss for x in (
-        "AppName=FlashDL", "DefaultDirName={autopf}",
-        r"dist\FlashDL", "FlashDL.exe", "recursesubdirs"))
+        "AppName=Roch Xd", "DefaultDirName={autopf}",
+        r"dist\Roch Xd", "Roch Xd.exe", "recursesubdirs"))
     mf_ok = (mf.get("manifest_version") == 3
-             and "9614" in str(open(os.path.join(os.path.dirname(mf_path),
+             and "9615" in str(open(os.path.join(os.path.dirname(mf_path),
                                                    "background.js")).read())
              and "/add" in str(open(os.path.join(os.path.dirname(mf_path),
                                                    "background.js")).read()))
-    _ok("iss_coherent", iss_ok, "flashdl.iss : AppName, recursesubdirs, FlashDL.exe OK")
-    _ok("ext_coherent", mf_ok, "extension : MV3 + background.js pointe PORT=9614 + /add")
+    _ok("iss_coherent", iss_ok, "flashdl.iss : AppName, recursesubdirs, Roch Xd.exe OK")
+    _ok("ext_coherent", mf_ok, "extension : MV3 + background.js pointe PORT=9615 + /add")
 except Exception as e:
     import traceback; traceback.print_exc()
     _ok("iss_coherent", False, f"EXC {type(e).__name__}: {e}")
@@ -210,11 +210,11 @@ if not os.path.exists(venv_python):
 try:
     r = subprocess.run([venv_python, main_py, "--help"], capture_output=True,
                        text=True, timeout=30, cwd=os.path.dirname(main_py))
-    hlp_ok = r.returncode == 0 and "FlashDL" in (r.stdout or "")
+    hlp_ok = r.returncode == 0 and "Roch Xd" in (r.stdout or "")
 except Exception as e:
     hlp_ok = False
     print(f"   EXC: {e}")
-_ok("cli_help", hlp_ok, f"main.py --help exit=0 msg='FlashDL' present={hlp_ok}")
+_ok("cli_help", hlp_ok, f"main.py --help exit=0 msg='Roch Xd' present={hlp_ok}")
 
 print()
 print(SEP)

@@ -1,5 +1,5 @@
 @echo off
-title FlashDL
+title Roch Xd
 cd /d "%~dp0flashdl"
 call .venv\Scripts\activate.bat
 python main.py

@@ -1,19 +1,20 @@
 [Setup]
-AppName=FlashDL
+AppName=Roch Xd
 AppVersion=1.0
-DefaultDirName={autopf}\FlashDL
-DefaultGroupName=FlashDL
-OutputBaseFilename=FlashDL-Setup
+DefaultDirName={autopf}\Roch Xd
+DefaultGroupName=Roch Xd
+OutputBaseFilename=Roch-Xd-Setup
 OutputDir=..\installateur
 Compression=lzma
 SolidCompression=yes
 
 [Files]
-Source: "..\dist\FlashDL\*"; DestDir: "{app}"; Flags: recursesubdirs
+Source: "..\dist\Roch Xd\*"; DestDir: "{app}"; Flags: recursesubdirs
+Source: "..\extension\*"; DestDir: "{app}\extension"; Flags: recursesubdirs
 
 [Icons]
-Name: "{group}\FlashDL"; Filename: "{app}\FlashDL.exe"
-Name: "{autodesktop}\FlashDL"; Filename: "{app}\FlashDL.exe"
+Name: "{group}\Roch Xd"; Filename: "{app}\Roch Xd.exe"
+Name: "{autodesktop}\Roch Xd"; Filename: "{app}\Roch Xd.exe"
 
 [Run]
-Filename: "{app}\FlashDL.exe"; Description: "Lancer FlashDL"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Roch Xd.exe"; Description: "Lancer Roch Xd"; Flags: nowait postinstall skipifsilent

@@ -1,5 +1,6 @@
 import glob
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -54,12 +55,14 @@ def parse_playlist(text, base):
     if not lines or not lines[0].startswith("#EXTM3U"):
         raise DownloadError("Ce n'est pas une playlist HLS valide")
 
-    variants, segments, init, ended = [], [], None, False
+    variants, segments, durations, init, ended = [], [], [], None, False
+    pending_duration = None
     for i, l in enumerate(lines):
         if l.startswith("#EXT-X-STREAM-INF"):
             uri = next((x for x in lines[i + 1:] if not x.startswith("#")), None)
             if uri:
-                bw = int(_attrs(l).get("BANDWIDTH", 0) or 0)
+                attrs = _attrs(l)
+                bw = int(attrs.get("AVERAGE-BANDWIDTH") or attrs.get("BANDWIDTH", 0) or 0)
                 variants.append((bw, urljoin(base, uri)))
         elif l.startswith("#EXT-X-KEY"):
             if _attrs(l).get("METHOD", "NONE") != "NONE":
@@ -68,21 +71,29 @@ def parse_playlist(text, base):
             raise DownloadError("Flux HLS par plages d'octets : non supporté")
         elif l.startswith("#EXT-X-MAP"):
             init = urljoin(base, _attrs(l)["URI"])
+        elif l.startswith("#EXTINF:"):
+            try:
+                pending_duration = float(l.split(":", 1)[1].split(",", 1)[0])
+            except ValueError:
+                pending_duration = None
         elif l.startswith("#EXT-X-ENDLIST"):
             ended = True
         elif not l.startswith("#"):
             segments.append(urljoin(base, l))
+            if pending_duration is not None:
+                durations.append(pending_duration)
+            pending_duration = None
 
     if variants:
         return "master", variants
-    return "media", segments, init, ended
+    return "media", segments, init, ended, durations
 
 
 class HlsDownloader:
     """Même interface que Downloader, pour les flux .m3u8."""
 
     def __init__(self, url, dest, n_threads=8, expected_sha256=None, limiter=None,
-                 headers=None):
+                 headers=None, estimated_size=0):
         self.url = url
         self.dest = dest
         self.n_threads = n_threads
@@ -91,8 +102,11 @@ class HlsDownloader:
         self.status = "waiting"
         self.error = None
         self.sha256 = None
-        self.total = 0
+        self.estimated_total = max(0, int(estimated_size or 0))
+        self.total = self.estimated_total
+        self.total_is_estimated = bool(self.estimated_total)
         self.downloaded = 0
+        self.attempts = 0
         self._count = 0
         self._n = 0
         self._next = 0
@@ -124,7 +138,7 @@ class HlsDownloader:
 
     # ---------- téléchargement ----------
     def run(self):
-        self._stop.clear()
+        # Preserve a pause requested between start() and this worker entry.
         self._errors = []
         self.error = None
         self.status = "downloading"
@@ -137,17 +151,20 @@ class HlsDownloader:
 
     def _resolve(self):
         url = self.url
+        bandwidth = 0
         for _ in range(3):
             parsed = parse_playlist(_get(url, self.headers).text, url)
             if parsed[0] == "master":
-                url = max(parsed[1])[1]          # meilleure qualité
+                bandwidth, url = max(parsed[1])  # meilleure qualité annoncée
                 continue
-            _, segments, init, ended = parsed
+            _, segments, init, ended, durations = parsed
             if not ended:
                 raise DownloadError("Flux en direct : non supporté")
             if not segments:
                 raise DownloadError("Playlist vide")
-            return ([init] if init else []) + segments
+            estimated_size = (int(bandwidth * sum(durations) / 8)
+                              if bandwidth and len(durations) == len(segments) else 0)
+            return ([init] if init else []) + segments, estimated_size
         raise DownloadError("Playlist HLS invalide")
 
     def _seg_path(self, i):
@@ -158,9 +175,28 @@ class HlsDownloader:
             raise DownloadError(
                 "ffmpeg introuvable : installe-le (winget install Gyan.FFmpeg), "
                 "puis relance FlashDL.")
-        items = self._resolve()
+        items, playlist_estimate = self._resolve()
+        estimated_size = max(self.estimated_total, playlist_estimate)
         self._n = len(items)
-        os.makedirs(self.dest + ".hls", exist_ok=True)
+        self.estimated_total = estimated_size
+        self.total = estimated_size
+        self.total_is_estimated = bool(estimated_size)
+        folder = self.dest + ".hls"
+        os.makedirs(folder, exist_ok=True)
+        state_file = os.path.join(folder, "state.json")
+        saved_items = None
+        try:
+            with open(state_file, "r", encoding="utf-8") as stream:
+                saved_items = json.load(stream).get("items")
+        except (OSError, ValueError, AttributeError):
+            pass
+        if saved_items is not None and saved_items != items:
+            shutil.rmtree(folder, ignore_errors=True)
+            os.makedirs(folder, exist_ok=True)
+        tmp_state = state_file + ".tmp"
+        with open(tmp_state, "w", encoding="utf-8") as stream:
+            json.dump({"source": self.url, "items": items}, stream)
+        os.replace(tmp_state, state_file)
 
         self._count = 0
         self.downloaded = 0
@@ -190,8 +226,17 @@ class HlsDownloader:
         self.status = "done"
 
     def _update_total(self):
-        if self._count:
-            self.total = int(self.downloaded / self._count * self._n)
+        # Do not derive a percentage from an average segment length. Once every
+        # segment is actually present, their exact byte sum is known and can be
+        # shown while ffmpeg assembles the final container.
+        if self._n and self._count == self._n:
+            self.total = sum(os.path.getsize(self._seg_path(i))
+                             for i in range(self._n))
+            self.estimated_total = 0
+            self.total_is_estimated = False
+        else:
+            self.total = self.estimated_total
+            self.total_is_estimated = bool(self.estimated_total)
 
     def _worker(self, items):
         try:
@@ -216,6 +261,16 @@ class HlsDownloader:
             if self._stop.is_set():
                 return
             got = 0
+            def discard_partial():
+                nonlocal got
+                if got:
+                    with self._lock:
+                        self.downloaded = max(0, self.downloaded - got)
+                    got = 0
+                try:
+                    os.remove(tmp)
+                except FileNotFoundError:
+                    pass
             try:
                 r = http_get(url, headers=self.headers, stream=True,
                              timeout=TIMEOUT)
@@ -227,13 +282,17 @@ class HlsDownloader:
                     with open(tmp, "wb") as f:
                         for chunk in r.iter_content(64 * 1024):
                             if self._stop.is_set():
+                                discard_partial()
                                 return
                             if self.limiter:
                                 self.limiter.wait(len(chunk), self._stop)
                                 if self._stop.is_set():
+                                    discard_partial()
                                     return
                             f.write(chunk)
                             got += len(chunk)
+                            with self._lock:
+                                self.downloaded += len(chunk)
                 finally:
                     try:
                         r.close()
@@ -241,11 +300,12 @@ class HlsDownloader:
                         pass
                 os.replace(tmp, final)
                 with self._lock:
-                    self.downloaded += got
                     self._count += 1
                     self._update_total()
                 return
             except (OSError,) + RETRYABLE_ERRORS as e:
+                discard_partial()
+                self.attempts += 1
                 last = e
                 if self._stop.wait(min(2 ** attempt, 10)):
                     return
@@ -283,5 +343,7 @@ class HlsDownloader:
                 h.update(block)
         self.sha256 = h.hexdigest()
         self.total = os.path.getsize(self.dest)
+        self.estimated_total = 0
+        self.total_is_estimated = False
         self.downloaded = self.total
         shutil.rmtree(folder, ignore_errors=True)

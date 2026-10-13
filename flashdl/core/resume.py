@@ -35,7 +35,13 @@ def clear_state(dest):
 def remove_parts(dest):
     folder = os.path.dirname(dest) or "."
     prefix = os.path.basename(dest) + ".part"
-    for name in os.listdir(folder):
+    try:
+        names = os.listdir(folder)
+    except FileNotFoundError:
+        # The destination directory may have been moved/deleted since the
+        # download was recorded. Missing partial data is already cleaned up.
+        return
+    for name in names:
         if name.startswith(prefix):
             try:
                 os.remove(os.path.join(folder, name))

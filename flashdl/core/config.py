@@ -3,6 +3,7 @@ Configuration des headers HTTP et sites supportés pour FlashDL
 """
 
 import random
+from urllib.parse import urlsplit
 
 # Headers par défaut pour les requêtes
 DEFAULT_HEADERS = {
@@ -194,9 +195,14 @@ def get_headers_for_url(url: str, extra_headers: dict = None) -> dict:
     """
     headers = DEFAULT_HEADERS.copy()
     
-    # Détecter le site et appliquer ses headers spécifiques
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        host = ""
+
+    # Match the actual host, including subdomains, instead of arbitrary URL text.
     for domain, site_headers in SITE_HEADERS.items():
-        if domain in url.lower():
+        if host == domain or host.endswith("." + domain):
             headers.update(site_headers)
             break
     
@@ -211,8 +217,11 @@ def get_site_extractor(url: str) -> str:
     """
     Retourne le nom de l'extracteur pour un site donné
     """
-    url_lower = url.lower()
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return None
     for domain, extractor in SUPPORTED_SITES.items():
-        if domain in url_lower:
+        if host == domain or host.endswith("." + domain):
             return extractor
     return None

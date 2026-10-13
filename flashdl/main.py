@@ -128,9 +128,9 @@ def show_history():
 
 
 def main():
-    ap = argparse.ArgumentParser(description="FlashDL - gestionnaire de téléchargement")
+    ap = argparse.ArgumentParser(description="Roch Xd - gestionnaire de téléchargement")
     ap.add_argument("url", nargs="?")
-    ap.add_argument("threads", nargs="?", type=int, default=8)
+    ap.add_argument("threads", nargs="?", type=int, default=12)
     ap.add_argument("-t", type=int, help="threads par fichier")
     ap.add_argument("-o", "--out", help="dossier de destination")
     ap.add_argument("--sha256", help="hash attendu (vérification d'intégrité)")

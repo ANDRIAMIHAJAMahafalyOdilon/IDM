@@ -2,7 +2,9 @@
 import glob
 import hashlib
 import os
+import shutil
 import threading
+from urllib.parse import urlparse
 
 
 class YoutubeDownloader:
@@ -15,7 +17,7 @@ class YoutubeDownloader:
         self.ext = ext or "mp4"
         self.headers = dict(headers or {})
         self.limiter = limiter
-        self.n_threads = max(1, min(int(n_threads or 1), 8))
+        self.n_threads = max(1, min(int(n_threads or 1), 16))
         self.status = "waiting"
         self.error = None
         self.sha256 = None
@@ -61,7 +63,7 @@ class YoutubeDownloader:
             raise yt_dlp.utils.DownloadError("Téléchargement mis en pause")
 
     def run(self):
-        self._stop.clear()
+        # Preserve a pause requested between start() and this worker entry.
         self.status = "downloading"
         self.error = None
         self._progress_by_stream.clear()
@@ -79,15 +81,13 @@ class YoutubeDownloader:
                 if not ffmpeg:
                     raise RuntimeError(
                         "FFmpeg est nécessaire pour réunir l’image et le son de cette qualité.")
+            runtime_commands = {"deno": "deno", "node": "node", "quickjs": "qjs"}
+            js_runtimes = {runtime: {} for runtime, command in runtime_commands.items()
+                           if shutil.which(command)}
             options = {
                 "quiet": True,
                 "no_warnings": True,
                 "noplaylist": True,
-                "js_runtimes": {"node": {}},
-                "extractor_args": {
-                    "youtube": {"player_client": ["default", "web_embedded"]},
-                    "youtubetab": {"skip": ["authcheck"]},
-                },
                 "format": selector,
                 "outtmpl": base + ".%(ext)s",
                 "merge_output_format": self.ext,
@@ -97,16 +97,22 @@ class YoutubeDownloader:
                 "http_chunk_size": 10 * 1024 * 1024,
                 "progress_hooks": [self._progress],
             }
+            if js_runtimes:
+                options["js_runtimes"] = js_runtimes
             if self.headers:
-                # YouTube gets UA/referer, but never a raw browser Cookie
-                # header. yt-dlp deprecates this and cookies can trigger the
-                # broken tv_downgraded player client.
-                youtube_headers = {
+                # Keep cookies for authenticated third-party extractors, but
+                # never pass a raw browser Cookie header to YouTube's client.
+                host = (urlparse(self.url).hostname or "").lower()
+                is_youtube = any(host == domain or host.endswith("." + domain)
+                                 for domain in ("youtube.com", "youtube-nocookie.com",
+                                                "youtu.be"))
+                ydl_headers = {
                     key: value for key, value in self.headers.items()
-                    if key.lower() in ("user-agent", "referer")
+                    if key.lower() in (("user-agent", "referer") if is_youtube
+                                       else ("user-agent", "referer", "cookie"))
                 }
-                if youtube_headers:
-                    options["http_headers"] = youtube_headers
+                if ydl_headers:
+                    options["http_headers"] = ydl_headers
             if ffmpeg:
                 options["ffmpeg_location"] = ffmpeg
 

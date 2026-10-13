@@ -3,11 +3,14 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 yt_dlp_hidden = collect_submodules('yt_dlp')
 yt_dlp_datas  = collect_data_files('yt_dlp', include_py_files=False)
+yt_dlp_ejs_hidden = collect_submodules('yt_dlp_ejs')
+yt_dlp_ejs_datas  = collect_data_files('yt_dlp_ejs', include_py_files=False)
 certifi_datas = collect_data_files('certifi',   include_py_files=False)
 bs4_datas     = collect_data_files('bs4',       include_py_files=False)
 
 HIDDENIMPORTS = [
     *yt_dlp_hidden,
+    *yt_dlp_ejs_hidden,
     'yt_dlp.compat._legacy',
     'yt_dlp.utils._legacy',
     'yt_dlp.utils.traversal',
@@ -55,6 +58,7 @@ EXCLUDES = [
 
 DATAS = [
     *yt_dlp_datas,
+    *yt_dlp_ejs_datas,
     *certifi_datas,
     *bs4_datas,
 ]
@@ -80,7 +84,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='FlashDL',
+    name='Roch Xd',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -99,5 +103,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='FlashDL',
+    name='Roch Xd',
 )

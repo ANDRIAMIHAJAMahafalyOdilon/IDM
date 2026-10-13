@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import json
+import shutil
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Optional, List, Callable
@@ -24,6 +25,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from .config import get_site_extractor, get_headers_for_url
+from .metadata import clean_page_title
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,7 @@ class VideoFormat:
     extra_headers: Optional[dict] = None
     format_id: Optional[str] = None
     has_audio: bool = True
+    bitrate_kbps: Optional[int] = None
 
 
 @dataclass
@@ -268,6 +271,7 @@ def _expand_hls_master(formats: List[VideoFormat]) -> List[VideoFormat]:
             expanded.append(VideoFormat(
                 label=label, ext=source.ext, url=target, is_hls=True,
                 size=size, extra_headers=source.extra_headers,
+                bitrate_kbps=(bandwidth // 1000) or None,
             ))
         result = list(formats)
         result[result.index(source):result.index(source) + 1] = expanded
@@ -347,29 +351,34 @@ def _estimate_hls_size(url: str, bandwidth: int, extra_headers=None):
 # 1) YouTube — via yt-dlp
 # ---------------------------------------------------------------------------
 
-def _extract_youtube(url: str, extra_headers=None) -> VideoInfo:
+def _is_youtube_url(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return any(host == domain or host.endswith("." + domain)
+               for domain in ("youtube.com", "youtube-nocookie.com", "youtu.be"))
+
+
+def _extract_ytdlp(url: str, extra_headers=None, extractor="yt-dlp") -> VideoInfo:
     try:
         import yt_dlp
     except ImportError:
         return VideoInfo(success=False, error="yt-dlp n'est pas installé",
-                         source_url=url, extractor="youtube")
+                         source_url=url, extractor=extractor)
 
+    runtime_commands = {"deno": "deno", "node": "node", "quickjs": "qjs"}
+    js_runtimes = {runtime: {} for runtime, command in runtime_commands.items()
+                   if shutil.which(command)}
     ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True,
-                "format": None, "noplaylist": True,
-                "js_runtimes": {"node": {}},
-                "extractor_args": {
-                    # Avoid the broken tv_downgraded client used for signed-in
-                    # sessions; default + web_embedded is the current yt-dlp
-                    # workaround for "The page needs to be reloaded".
-                    "youtube": {"player_client": ["default", "web_embedded"]},
-                    "youtubetab": {"skip": ["authcheck"]},
-                }}
+                "format": None, "noplaylist": True}
+    if js_runtimes:
+        ydl_opts["js_runtimes"] = js_runtimes
     if extra_headers:
-        # Do not forward browser cookies as a raw Cookie header to yt-dlp:
-        # newer yt-dlp warns about this and YouTube's logged-in client is
-        # currently prone to returning "The page needs to be reloaded".
+        # YouTube's logged-in client is prone to rejecting copied browser
+        # cookies. Other extractors can use the originating site's session.
+        is_youtube = extractor == "youtube" or _is_youtube_url(url)
+        allowed_headers = (("user-agent", "referer") if is_youtube else
+                           ("user-agent", "referer", "cookie"))
         ydl_headers = {key: value for key, value in extra_headers.items()
-                       if key.lower() in ("user-agent", "referer")}
+                       if key.lower() in allowed_headers}
         if ydl_headers:
             ydl_opts["http_headers"] = ydl_headers
 
@@ -378,7 +387,7 @@ def _extract_youtube(url: str, extra_headers=None) -> VideoInfo:
             info = ydl.extract_info(url, download=False)
     except Exception as e:
         return VideoInfo(success=False, error=str(e),
-                         source_url=url, extractor="youtube")
+                         source_url=url, extractor=extractor)
 
     title = info.get("title") or info.get("id") or "youtube_video"
     thumb = (info.get("thumbnail")
@@ -387,6 +396,9 @@ def _extract_youtube(url: str, extra_headers=None) -> VideoInfo:
     formats = []
     seen = set()
     duration = float(info.get("duration") or 0)
+    is_youtube = extractor == "youtube" or _is_youtube_url(url)
+    media_headers = (("user-agent", "referer") if is_youtube else
+                     ("user-agent", "referer", "cookie"))
     audio_bitrate = max(
         (float(fmt.get("abr") or 0) for fmt in info.get("formats", [])
          if fmt.get("vcodec") == "none"), default=0.0)
@@ -408,11 +420,12 @@ def _extract_youtube(url: str, extra_headers=None) -> VideoInfo:
         if not url_f:
             continue
         format_id = str(f.get("format_id") or "")
-        key = (format_id, ext, proto)
+        key = (format_id or url_f, ext, proto)
         if key in seen:
             continue
         seen.add(key)
-        is_hls = proto in ("m3u8", "m3u8_native") or url_f.lower().endswith(".m3u8")
+        is_hls = (proto in ("m3u8", "m3u8_native") or
+                  urlparse(url_f).path.lower().endswith(".m3u8"))
         size = f.get("filesize") or f.get("filesize_approx")
         if not size and duration:
             bitrate = float(f.get("tbr") or 0) * 1000
@@ -423,8 +436,9 @@ def _extract_youtube(url: str, extra_headers=None) -> VideoInfo:
             label=str(label), ext=ext, url=url_f, is_hls=is_hls,
             size=size, format_id=format_id,
             has_audio=f.get("acodec") != "none",
+            bitrate_kbps=(int(float(f.get("tbr") or 0)) or None),
             extra_headers={key: value for key, value in (extra_headers or {}).items()
-                           if key.lower() in ("user-agent", "referer")},
+                           if key.lower() in media_headers},
         ))
 
     if not formats:
@@ -457,9 +471,18 @@ def _extract_youtube(url: str, extra_headers=None) -> VideoInfo:
 
     return VideoInfo(
         success=bool(formats), title=title, formats=formats, thumbnail=thumb,
-        source_url=url, extractor="youtube",
+        source_url=url, extractor=extractor,
         error="" if formats else "Aucun format vidéo trouvé",
     )
+
+
+def _extract_youtube(url: str, extra_headers=None) -> VideoInfo:
+    return _extract_ytdlp(url, extra_headers=extra_headers, extractor="youtube")
+
+
+def _extract_with_ytdlp(url: str, extra_headers=None) -> VideoInfo:
+    """Use yt-dlp's extractor registry for sites without a custom adapter."""
+    return _extract_ytdlp(url, extra_headers=extra_headers, extractor="yt-dlp")
 
 
 # ---------------------------------------------------------------------------
@@ -1341,12 +1364,14 @@ def _extract_animesama(url: str) -> VideoInfo:
         ep_num = episode.group(1)
 
     title_parts = [_safe_filename(raw_title)]
-    if label and label.lower() != "saison1":
-        title_parts.append(label)
-    elif label:
-        title_parts.append(label.replace("saison", "S"))
-    if ep_num:
-        title_parts.append(f"EP{int(ep_num):02d}")
+    season_match = re.search(r"(?:saison|season|s)\s*0?(\d{1,2})", label, re.I)
+    if season_match and ep_num:
+        title_parts.append(f"S{int(season_match.group(1)):02d}E{int(ep_num):02d}")
+    else:
+        if label:
+            title_parts.append(label)
+        if ep_num:
+            title_parts.append(f"EP{int(ep_num):02d}")
     if lang:
         title_parts.append(lang.upper())
     title = " - ".join([p for p in title_parts if p])
@@ -1388,11 +1413,12 @@ def _extract_frenchstream(url: str) -> VideoInfo:
     h1 = soup.find(["h1", "h2"], class_=re.compile(r"(title|heading|name)", re.I))
     if h1 and h1.get_text(strip=True):
         title = h1.get_text(strip=True).strip()
-    if not title and soup.title and soup.title.string:
-        title = soup.title.string.split("|")[0].split("-")[0].strip()
     og = soup.find("meta", property="og:title")
     if og and og.get("content"):
-        title = og["content"].strip() or title
+        title = title or og["content"].strip()
+    if not title and soup.title and soup.title.string:
+        title = soup.title.string.strip()
+    title = clean_page_title(title, urlparse(url).hostname)
     title = title or "frenchstream_video"
 
     thumb = ""
@@ -1556,7 +1582,10 @@ _EXTRACTORS = {
 
 def extract(url: str, extra_headers=None) -> VideoInfo:
     """Point d'entrée principal."""
-    if urlparse(url).path.lower().endswith(".m3u8"):
+    media_path = urlparse(url).path.lower()
+    if media_path.endswith(".mpd"):
+        return _extract_with_ytdlp(url, extra_headers=extra_headers)
+    if media_path.endswith(".m3u8"):
         name = os.path.splitext(os.path.basename(urlparse(url).path))[0]
         name = name or "Flux vidéo"
         info = VideoInfo(
@@ -1570,10 +1599,8 @@ def extract(url: str, extra_headers=None) -> VideoInfo:
 
     site = get_site_extractor(url)
     if not site:
-        return VideoInfo(
-            success=False, source_url=url,
-            error=f"Site non supporté pour l'extraction : {urlparse(url).netloc}",
-        )
+        # Use yt-dlp's maintained registry for sites without a Roch Xd adapter.
+        return _extract_with_ytdlp(url, extra_headers=extra_headers)
 
     fn = _EXTRACTORS.get(site)
     if not fn:
@@ -1585,6 +1612,12 @@ def extract(url: str, extra_headers=None) -> VideoInfo:
     try:
         info = (_extract_youtube(url, extra_headers=extra_headers)
                 if site == "youtube" else fn(url))
+        if (site != "youtube" and (not info.success or not info.formats)):
+            fallback = _extract_with_ytdlp(url, extra_headers=extra_headers)
+            if fallback.success and fallback.formats:
+                return fallback
+            if not info.error:
+                info.error = fallback.error
         if not info.extractor:
             info.extractor = site
         if not info.source_url:
@@ -1602,4 +1635,4 @@ def extract(url: str, extra_headers=None) -> VideoInfo:
 
 def is_extractable_url(url: str) -> bool:
     return (get_site_extractor(url) is not None
-            or urlparse(url).path.lower().endswith(".m3u8"))
+            or urlparse(url).path.lower().endswith((".m3u8", ".mpd")))

@@ -1,10 +1,16 @@
 {
   "manifest_version": 3,
-  "name": "FlashDL Integration",
-  "version": "1.1.0",
-  "description": "Envoie les téléchargements du navigateur vers FlashDL.",
+  "name": "Roch Xd Integration",
+  "version": "1.2.0",
+  "description": "Envoie les téléchargements du navigateur vers Roch Xd.",
   "permissions": ["downloads", "webRequest", "cookies", "tabs", "storage", "contextMenus", "notifications"],
   "host_permissions": ["<all_urls>"],
+  "content_scripts": [{
+    "matches": ["http://*/*", "https://*/*"],
+    "js": ["video_panel.js"],
+    "all_frames": true,
+    "run_at": "document_idle"
+  }],
   "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "FlashDL" }
+  "action": { "default_popup": "popup.html", "default_title": "Roch Xd" }
 }

@@ -4,4 +4,4 @@ PyQt5>=5.15.0
 beautifulsoup4>=4.11.0
 lxml>=4.9.0
 cryptography>=38.0.0
-yt-dlp[default]>=2025.11.12
+yt-dlp[default]>=2026.08.19

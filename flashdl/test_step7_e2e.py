@@ -262,7 +262,7 @@ try:
         cwd=os.path.dirname(main_py),
     )
     print(f"   --help exit: {r.returncode}")
-    has_help = (r.returncode == 0 and "FlashDL" in (r.stdout or ""))
+    has_help = (r.returncode == 0 and "Roch Xd" in (r.stdout or ""))
     print(f"   --help msg : {'OK' if has_help else 'FAIL'}")
     if not has_help:
         print(f"   stdout: {r.stdout[:500]}")

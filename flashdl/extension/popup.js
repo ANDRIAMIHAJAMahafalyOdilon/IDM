@@ -1,13 +1,14 @@
-const API = "http://127.0.0.1:9614";
+const API = "http://127.0.0.1:9615";
 
 let currentTabId = null;
 let currentTabUrl = null;
 
-// Vérifier si FlashDL est en ligne
+// Vérifier si Roch Xd est en ligne
 async function checkStatus() {
     try {
         const r = await fetch(API + "/ping");
-        const online = r.ok;
+        const state = r.ok ? await r.json() : null;
+        const online = state?.app === "Roch Xd" && state?.version === "1.2.0";
         updateStatus(online);
         return online;
     } catch (e) {
@@ -65,29 +66,31 @@ async function loadMedia() {
     let host = "";
     try { host = new URL(currentTabUrl).hostname.toLowerCase(); } catch (e) {}
     if (host === "youtu.be" || host.endsWith(".youtube.com") || host === "youtube.com") {
-        displayYoutube(currentTabUrl);
+        displayExtractedVideo(currentTabUrl);
         return;
     }
     
     chrome.runtime.sendMessage(
         { type: "getMedia", tabId: currentTabId },
         (response) => {
-            if (response && response.media) {
+            if (response && response.media && response.media.length) {
                 displayMedia(response.media);
+            } else {
+                displayExtractedVideo(currentTabUrl);
             }
         }
     );
 }
 
-function displayYoutube(url) {
+function displayExtractedVideo(url) {
     const content = document.getElementById('content');
-    content.innerHTML = '<div class="empty">Analyse des formats YouTube…</div>';
+    content.innerHTML = '<div class="empty">Analyse des formats vidéo…</div>';
     chrome.runtime.sendMessage({ type: "extractVideo", url, referer: url }, result => {
         if (!result || !result.ok || !Array.isArray(result.formats) || !result.formats.length) {
             content.innerHTML = '';
             const error = document.createElement('div');
             error.className = 'empty';
-            error.textContent = result?.error || 'Aucun format vidéo disponible. Vérifie que yt-dlp est installé et à jour, puis actualise la page.';
+            error.textContent = result?.error || 'Aucun format vidéo disponible sur cette page.';
             content.appendChild(error);
             return;
         }
@@ -98,10 +101,10 @@ function displayYoutube(url) {
         info.className = 'media-info';
         const name = document.createElement('div');
         name.className = 'media-name';
-        name.textContent = result.title || 'Vidéo YouTube';
+        name.textContent = result.title || 'Vidéo détectée';
         const meta = document.createElement('div');
         meta.className = 'media-meta';
-        meta.textContent = 'Formats vidéo extraits par yt-dlp';
+        meta.textContent = `Formats extraits par yt-dlp • ${new URL(url).hostname}`;
         const controls = document.createElement('div');
         controls.className = 'variant-controls';
         const select = document.createElement('select');
@@ -132,8 +135,8 @@ function displayYoutube(url) {
             }, response => {
                 button.disabled = false;
                 button.textContent = 'Télécharger cette qualité';
-                if (response?.ok) alert(`Vidéo ajoutée à FlashDL : ${result.title || 'YouTube'}`);
-                else alert(response?.error || 'Erreur lors de l’ajout à FlashDL.');
+                if (response?.ok) alert(`Vidéo ajoutée à Roch Xd : ${result.title || 'vidéo'}`);
+                else alert(response?.error || 'Erreur lors de l’ajout à Roch Xd.');
             });
         });
 
@@ -224,7 +227,7 @@ function displayMedia(mediaList) {
 
             inspectHls(media).then(result => {
                 if (!result.ok || !Array.isArray(result.formats) || !result.formats.length) {
-                    details.textContent = 'Impossible de lire cette playlist HLS. Vérifiez que FlashDL est démarré.';
+                    details.textContent = 'Impossible de lire cette playlist HLS. Vérifiez que Roch Xd est démarré.';
                     return;
                 }
                 variants = result.formats;
@@ -258,11 +261,11 @@ function displayMedia(mediaList) {
     content.appendChild(listDiv);
 }
 
-// Envoyer à FlashDL
+// Envoyer à Roch Xd
 async function sendToFlashDL(media) {
     const online = await checkStatus();
     if (!online) {
-        alert("FlashDL n'est pas démarré. Lance l'application d'abord.");
+        alert("Roch Xd n'est pas démarré. Lance l'application d'abord.");
         return;
     }
     
@@ -279,9 +282,11 @@ async function sendToFlashDL(media) {
     }, (response) => {
         if (response && response.ok) {
             // Feedback visuel
-            alert(`Ajouté à FlashDL : ${filename}`);
+            alert(`Ajouté à Roch Xd : ${filename}`);
+        } else if (response && response.cancelled) {
+            alert("Téléchargement annulé dans Roch Xd.");
         } else {
-            alert("Erreur lors de l'ajout à FlashDL");
+            alert("Erreur lors de l'ajout à Roch Xd");
         }
     });
 }
